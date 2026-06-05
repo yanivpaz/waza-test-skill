@@ -1,0 +1,115 @@
+name: Waza Evaluation
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  waza:
+    name: Run Waza Check and Eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Waza
+        run: |
+          mkdir -p "$HOME/bin"
+          export PATH="$HOME/bin:$PATH"
+          if ! command -v waza >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+          fi
+          export PATH="$HOME/bin:$PATH"
+          waza --version
+
+      - name: Run Waza skill check
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza check joker --no-update-check || true
+
+      - name: Run Waza eval suite
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml --output results.json --reporter junit:results.xml --no-update-check
+
+      - name: Print Waza test result summary
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          echo "=== Waza results.json ==="
+          if [ -f results.json ]; then
+            python3 -m json.tool results.json
+          else
+            echo "results.json not found"
+          fi
+
+      - name: Write native GitHub workflow summary
+        if: always()
+        run: |
+          if [ -f results.json ]; then
+            python3 - <<'PY' > "$GITHUB_STEP_SUMMARY"
+          import json
+
+          with open("results.json") as f:
+              results = json.load(f)
+
+          tasks = results.get("tasks", [])
+          summary = results.get("summary", {})
+
+          def first_present(mapping, *keys, default="N/A"):
+              for key in keys:
+                  value = mapping.get(key)
+                  if value is not None:
+                      return value
+              return default
+
+          print("# Waza Eval Summary")
+          print("")
+          print("**Status:**", "passed" if summary.get("failed", 0) == 0 and summary.get("errors", 0) == 0 else "failed")
+          print("")
+          print("| Metric | Value |")
+          print("|---|---|")
+          print(f"| Success rate | {first_present(summary, 'success_rate')} |")
+          print(f"| Aggregate score | {first_present(summary, 'aggregate_score')} |")
+          print(f"| Weighted score | {first_present(summary, 'weighted_score')} |")
+          print(f"| Total tests | {first_present(summary, 'total_tests', 'total', default=len(tasks))} |")
+          print(f"| Passed | {first_present(summary, 'succeeded', 'passed')} |")
+          print(f"| Failed | {first_present(summary, 'failed')} |")
+          print(f"| Errors | {first_present(summary, 'errors')} |")
+          print("")
+
+          if tasks:
+              print("## Task Results")
+              print("")
+              print("| Task | Result | Score | Duration |")
+              print("|---|---|---|---|")
+              for task in tasks:
+                  stats = task.get("stats", {})
+                  name = first_present(task, "display_name", "name", "test_id", "id")
+                  result = first_present(task, "status")
+                  score = first_present(stats, "avg_score", "avg_weighted_score")
+                  duration = first_present(stats, "avg_duration_ms")
+                  print(f"| {name} | {result} | {score} | {duration}ms |")
+          PY
+          else
+            echo 'results.json not found' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Waza results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waza-results-${{ github.run_id }}
+          path: |
+            results.json
+            results.xml

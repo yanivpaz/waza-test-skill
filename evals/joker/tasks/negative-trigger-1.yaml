@@ -1,0 +1,9 @@
+id: negative-trigger-001
+name: "Negative Trigger: Non-Joke Development Task"
+description: Ensure the joker skill does not trigger for unrelated software engineering work.
+tags:
+  - negative-trigger
+inputs:
+  prompt: "Review this pull request for possible race conditions."
+expected:
+  should_trigger: false

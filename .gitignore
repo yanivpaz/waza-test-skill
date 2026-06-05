@@ -1,0 +1,16 @@
+# Waza output
+results.json
+results.xml
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Logs and archives
+*.log
+*.jsonl
+*.tar.gz
