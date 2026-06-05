@@ -30,7 +30,16 @@ jobs:
           mkdir -p "$HOME/bin"
           export PATH="$HOME/bin:$PATH"
           if ! command -v waza >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+            set -o pipefail
+            for attempt in 1 2 3; do
+              if curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                exit 1
+              fi
+              sleep $((attempt * 5))
+            done
           fi
           waza --version
 
@@ -84,4 +93,3 @@ jobs:
         with:
           name: waza-quality-gates-${{ github.run_id }}
           path: artifacts/
-
