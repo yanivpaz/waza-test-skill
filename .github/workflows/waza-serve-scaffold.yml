@@ -1,0 +1,123 @@
+name: Waza Serve and Scaffold
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  serve-and-scaffold:
+    name: Serve, Init, New, Completion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Waza
+        run: |
+          mkdir -p "$HOME/bin"
+          export PATH="$HOME/bin:$PATH"
+          if ! command -v waza >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+          fi
+          waza --version
+
+      - name: Smoke-test HTTP dashboard server
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p serve-artifacts
+          set +e
+          timeout 8s waza serve --http --no-browser --port 3000 --results-dir . \
+            > serve-artifacts/http-server.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            cat serve-artifacts/http-server.log
+            exit "$code"
+          fi
+
+      - name: Smoke-test TCP JSON-RPC server
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          set +e
+          timeout 8s waza serve --tcp 127.0.0.1:9000 --results-dir . \
+            > serve-artifacts/tcp-server.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            cat serve-artifacts/tcp-server.log
+            exit "$code"
+          fi
+
+      - name: Demonstrate project and skill scaffolding
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p serve-artifacts
+          scaffold_dir="$(mktemp -d)"
+          waza init "$scaffold_dir" --no-skill --no-update-check
+          waza new skill demo-skill --output-dir "$scaffold_dir" --no-update-check
+          mkdir -p "$scaffold_dir/skills/eval-only-demo"
+          cat > "$scaffold_dir/skills/eval-only-demo/SKILL.md" <<'EOF'
+          ---
+          name: eval-only-demo
+          description: Use this demo skill for generated eval scaffold examples.
+          ---
+
+          # Eval Only Demo
+
+          Use for demonstrating waza new eval in CI.
+          EOF
+          (
+            cd "$scaffold_dir"
+            waza new eval eval-only-demo --no-update-check
+          )
+          find "$scaffold_dir" -maxdepth 4 -type f | sort > serve-artifacts/scaffold-files.txt
+
+      - name: Generate shell completions
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza completion bash --no-update-check > serve-artifacts/waza-completion.bash
+          waza completion zsh --no-update-check > serve-artifacts/waza-completion.zsh
+          waza completion fish --no-update-check > serve-artifacts/waza-completion.fish
+          waza completion powershell --no-update-check > serve-artifacts/waza-completion.ps1
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "# Waza Serve and Scaffold"
+            echo
+            echo "This manual workflow demonstrates the HTTP dashboard server, TCP JSON-RPC server, project initialization, skill/eval scaffolding, and shell completion generation."
+            echo
+            echo "## HTTP server log"
+            echo
+            echo '```text'
+            if [ -f serve-artifacts/http-server.log ]; then
+              sed -n '1,80p' serve-artifacts/http-server.log
+            else
+              echo "http-server.log not found"
+            fi
+            echo '```'
+            echo
+            echo "## TCP server log"
+            echo
+            echo '```text'
+            if [ -f serve-artifacts/tcp-server.log ]; then
+              sed -n '1,80p' serve-artifacts/tcp-server.log
+            else
+              echo "tcp-server.log not found"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Waza serve and scaffold artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waza-serve-scaffold-${{ github.run_id }}
+          path: serve-artifacts/

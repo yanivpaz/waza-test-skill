@@ -1,0 +1,87 @@
+name: Waza Quality Gates
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gates:
+    name: Check, Tokens, Coverage, Completion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Waza
+        run: |
+          mkdir -p "$HOME/bin"
+          export PATH="$HOME/bin:$PATH"
+          if ! command -v waza >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+          fi
+          waza --version
+
+      - name: Run skill readiness checks
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p artifacts
+          waza check joker --no-update-check | tee artifacts/waza-check.txt
+          waza check joker --format json --no-update-check > artifacts/waza-check.json
+
+      - name: Run token management commands
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza tokens count joker --format json --no-update-check > artifacts/tokens-count.json
+          waza tokens check joker --format json --strict --no-update-check > artifacts/tokens-check.json
+          waza tokens profile joker --format json --no-update-check > artifacts/tokens-profile.json
+
+      - name: Generate coverage grid
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza coverage . --path joker --path evals --format markdown --no-update-check > artifacts/coverage.md
+
+      - name: Generate shell completions
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza completion bash --no-update-check > artifacts/waza-completion.bash
+          waza completion zsh --no-update-check > artifacts/waza-completion.zsh
+          waza completion fish --no-update-check > artifacts/waza-completion.fish
+          waza completion powershell --no-update-check > artifacts/waza-completion.ps1
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "# Waza Quality Gates"
+            echo
+            echo "## Skill Check"
+            echo
+            echo '```text'
+            sed -n '1,80p' artifacts/waza-check.txt
+            echo '```'
+            echo
+            echo "## Coverage"
+            echo
+            cat artifacts/coverage.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Waza quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waza-quality-gates-${{ github.run_id }}
+          path: artifacts/
+

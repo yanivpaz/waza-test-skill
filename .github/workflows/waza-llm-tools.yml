@@ -1,0 +1,99 @@
+name: Waza LLM Tools
+
+on:
+  workflow_dispatch:
+    inputs:
+      judge_model:
+        description: Model to use for Waza LLM-assisted commands
+        required: true
+        default: claude-sonnet-4.6
+
+permissions:
+  contents: read
+
+jobs:
+  llm-tools:
+    name: Models, Quality, Suggest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Waza
+        run: |
+          mkdir -p "$HOME/bin"
+          export PATH="$HOME/bin:$PATH"
+          if ! command -v waza >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+          fi
+          waza --version
+
+      - name: List available models
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p llm-artifacts
+          waza models --json --no-update-check > llm-artifacts/models.json
+
+      - name: Run quality judge
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza quality joker/SKILL.md \
+            --model "${{ inputs.judge_model }}" \
+            --format json \
+            --no-update-check > llm-artifacts/quality.json
+
+      - name: Generate eval suggestions dry-run
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza suggest joker \
+            --model "${{ inputs.judge_model }}" \
+            --dry-run \
+            --format yaml \
+            --no-update-check > llm-artifacts/suggest.yaml
+
+      - name: Generate task from prompt
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p llm-artifacts/generated-tasks
+          waza new task from-prompt \
+            "Tell me a software development joke about flaky tests." \
+            llm-artifacts/generated-tasks/flaky-tests.yaml \
+            --root . \
+            --testname generated-flaky-test-joke \
+            --tags generated,joke \
+            --model "${{ inputs.judge_model }}" \
+            --no-update-check
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "# Waza LLM Tools"
+            echo
+            echo "This manual workflow demonstrates Waza commands that may need Copilot authentication: models, quality, and suggest."
+            echo
+            echo "Steps are marked continue-on-error so the workflow also documents missing-auth behavior."
+            echo
+            echo "Artifacts:"
+            echo
+            if [ -d llm-artifacts ]; then
+              find llm-artifacts -maxdepth 2 -type f -print | sort | sed 's/^/- /'
+            else
+              echo "- llm-artifacts directory not found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Waza LLM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waza-llm-tools-${{ github.run_id }}
+          path: llm-artifacts/

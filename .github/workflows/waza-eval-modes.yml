@@ -1,0 +1,193 @@
+name: Waza Eval Modes
+
+on:
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: Number of trials for the parallel cached run
+        required: true
+        default: "2"
+      workers:
+        description: Number of workers for parallel mode
+        required: true
+        default: "2"
+
+permissions:
+  contents: read
+
+jobs:
+  eval-modes:
+    name: Run Advanced Eval Modes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Install Waza
+        run: |
+          mkdir -p "$HOME/bin"
+          export PATH="$HOME/bin:$PATH"
+          if ! command -v waza >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/microsoft/waza/main/install.sh | bash
+          fi
+          waza --version
+
+      - name: Reset demo cache
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza cache clear --no-update-check || true
+
+      - name: Run standard eval with logs and transcripts
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p results sessions transcripts
+          waza run evals/joker/eval.yaml \
+            --output results/standard.json \
+            --reporter junit:results/standard.xml \
+            --session-log \
+            --session-dir sessions \
+            --transcript-dir transcripts \
+            --no-update-check
+
+      - name: Run parallel cached eval with multiple trials
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml \
+            --output results/parallel-cache.json \
+            --reporter junit:results/parallel-cache.xml \
+            --parallel \
+            --workers "${{ inputs.workers }}" \
+            --trials "${{ inputs.trials }}" \
+            --cache \
+            --session-log \
+            --session-dir sessions \
+            --transcript-dir transcripts \
+            --no-update-check
+
+      - name: Run tag and task filters
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml \
+            --output results/positive-tags.json \
+            --tags positive-trigger \
+            --no-update-check
+          waza run evals/joker/eval.yaml \
+            --output results/single-task.json \
+            --task positive-trigger-001 \
+            --no-update-check
+
+      - name: Run execution-only eval, then grade later
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml \
+            --output results/skip-graders.json \
+            --skip-graders \
+            --no-update-check
+          waza grade evals/joker/eval.yaml \
+            --results results/skip-graders.json \
+            --output results/graded.json \
+            --no-update-check
+
+      - name: Run baseline and no-skills demos
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml \
+            --output results/baseline.json \
+            --baseline \
+            --no-update-check
+          waza run evals/joker/eval.yaml \
+            --output results/no-skills.json \
+            --no-skills \
+            --no-update-check
+
+      - name: Run structured output-dir demo
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza run evals/joker/eval.yaml \
+            --output-dir structured-output \
+            --reporter junit:results/output-dir.xml \
+            --interpret \
+            --no-update-check
+
+      - name: Compare result files
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza compare results/standard.json results/parallel-cache.json results/graded.json \
+            --format table \
+            --no-update-check | tee results/compare.txt
+          waza compare results/standard.json results/parallel-cache.json results/graded.json \
+            --format json \
+            --no-update-check > results/compare.json
+
+      - name: Inspect session logs
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza session list --dir sessions --no-update-check | tee results/session-list.txt
+          first_session="$(find sessions -type f -name '*.jsonl' | sort | head -n 1)"
+          if [ -n "$first_session" ]; then
+            waza session view "$first_session" --no-update-check | tee results/session-view.txt
+          fi
+
+      - name: Demonstrate discover mode with colocated temp eval
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          demo_dir="$(mktemp -d)"
+          cp -R joker "$demo_dir/joker"
+          cp evals/joker/eval.yaml "$demo_dir/joker/eval.yaml"
+          mkdir -p "$demo_dir/joker/tasks"
+          cp evals/joker/tasks/*.yaml "$demo_dir/joker/tasks/"
+          (
+            cd "$demo_dir"
+            waza run --discover --output-dir "$GITHUB_WORKSPACE/discover-output" --no-update-check
+          )
+
+      - name: Demonstrate storage-backed results command
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          waza results list --format json --limit 5 --no-update-check > results/stored-results.json
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "# Waza Eval Modes"
+            echo
+            echo "This workflow demonstrates run filters, parallel workers, cache, session logs, transcripts, JUnit reporters, deferred grading, compare, baseline/no-skills, output-dir, discover mode, and stored-results lookup."
+            echo
+            echo "## Comparison"
+            echo
+            echo '```text'
+            if [ -f results/compare.txt ]; then
+              sed -n '1,120p' results/compare.txt
+            else
+              echo "compare.txt not found"
+            fi
+            echo '```'
+            echo
+            echo "## Sessions"
+            echo
+            echo '```text'
+            if [ -f results/session-list.txt ]; then
+              sed -n '1,80p' results/session-list.txt
+            else
+              echo "session-list.txt not found"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Waza eval-mode artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waza-eval-modes-${{ github.run_id }}
+          path: |
+            results/
+            sessions/
+            transcripts/
+            structured-output/
+            discover-output/
